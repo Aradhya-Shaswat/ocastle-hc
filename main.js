@@ -1,10 +1,14 @@
-import { audioCtx, beep, startThrustTone, stopThrustTone, startMusic, stopMusic, setMusicVolume } from './audio.js';
+import { audioCtx, beep, startThrustTone, stopThrustTone, setThrustLevel, startMusic, stopMusic, setMusicVolume, setSfxVolume } from './audio.js';
 import { generateTerrain, pickPads, terrainYAt } from './terrain.js';
 import { saveShipShape, loadShipShape, saveHigh, loadHigh } from './persist.js';
 import { shipVertices } from './ship.js';
 import { spawnParticles, updateParticles } from './particles.js';
 import { drawMenu, drawControllerConfirm, drawPauseMenu, overlayTransition, drawAchievement } from './ui.js';
-import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './input.js';
+import { initInput, pollInput, vibrateGamepad, stopThrottleVibration, setVibrationMultiplier } from './input.js';
+import { setStarDensity } from './background.js';
+import { drawSettings } from './ui.js';
+import { saveSettings, loadSettings } from './persist.js';
+import { initBackground, resizeBackground, updateBackground, drawBackground } from './background.js';
 
 (() => {
   const canvas = document.getElementById('game');
@@ -62,15 +66,15 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     off.height = Math.max(120, Math.round(320 * H / W));
     offCtx = off.getContext('2d');
     offCtx.setTransform(1,0,0,1,0,0);
+    try{ resizeBackground(W, H); }catch(e){}
   }
 
   
   window.addEventListener('resize', resize);
   resize();
+  try{ initBackground(state, { W, H, DPR }); }catch(e){}
 
-  // audio implementation moved to audio.js
-
-  // terrain functions moved to terrain.js
+  
 
   const base = {gravity:0.035, startFuel:300};
   state.menu = true;
@@ -78,7 +82,13 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
 
   const shipShapes = ['lander','triangle','rectangle','diamond','circle'];
   // ship shape persistence moved to persist.js (saveShipShape / loadShipShape)
-  function cycleShipShape(){ const i = shipShapes.indexOf(state.selectedShipShape || 'triangle'); const ni = (i+1) % shipShapes.length; state.selectedShipShape = shipShapes[ni]; try{ saveShipShape(state.selectedShipShape); }catch(e){} }
+  function cycleShipShape(){
+    const i = shipShapes.indexOf(state.selectedShipShape || 'triangle');
+    const ni = (i+1) % shipShapes.length;
+    state.selectedShipShape = shipShapes[ni];
+    try{ saveShipShape(state.selectedShipShape); }catch(e){}
+    try{ if(state.ship) state.ship.shape = state.selectedShipShape; }catch(e){}
+  }
   state.controllerConfirm = false;
   state.controllerFade = 0;
   state.activeGamepad = -1;
@@ -110,6 +120,9 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     state.highscore = loadHigh();
     state.selectedShipShape = loadShipShape();
     try{ stopThrottleVibration(); }catch(e){}
+    state.settings = state.settings || { music:0.06, sfx:1, vibration:1, stars:1, fullscreen:false, selectedIndex:0 };
+    try{ const ss = loadSettings(); if(ss) state.settings = Object.assign(state.settings, ss); }catch(e){}
+    try{ setMusicVolume(state.settings.music); setSfxVolume && setSfxVolume(state.settings.sfx); setVibrationMultiplier && setVibrationMultiplier(state.settings.vibration); setStarDensity && setStarDensity(state.settings.stars); }catch(e){}
     newRound(true);
   }
 
@@ -136,11 +149,16 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     const ship = state.ship;
     if(state.transition.active){
       state.transition.progress += dt / state.transition.duration;
-      if(state.transition.progress >= 1){ state.transition.active = false; state.menu = false; state.controllerConfirm = false; state.activeGamepad = -1; initGame(); }
+      if(state.transition.progress >= 1){ state.transition.active = false; state.menu = false; state.controllerConfirm = false; state._controllerConfirmPhase = null; state._controllerConfirmTs = null; state.waitForRelease = false; state.activeGamepad = -1; initGame(); }
     }
 
-    // input polling handled in input.js
+    
+    
     pollInput(dt);
+    // freeze game updates while paused
+    if(state.paused) return;
+
+    try{ updateBackground(dt); }catch(e){}
     const padRot = state.padRot || 0;
     const padThrottle = state.padThrottle || 0;
 
@@ -153,9 +171,14 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
       const power = controls.thrustPower * dt * mult;
       ship.vx += Math.sin(ship.angle) * power;
       ship.vy -= Math.cos(ship.angle) * power;
-      state.fuel = Math.max(0, state.fuel - controls.fuelRate * dt * mult);
+      // stop consuming fuel once player reaches score threshold
+      if(!(state.score >= 6500)){
+        state.fuel = Math.max(0, state.fuel - controls.fuelRate * dt * mult);
+      }
       startThrustTone();
+      try{ setThrustLevel(mult); }catch(e){}
     } else stopThrustTone();
+    try{ setThrustLevel(0); }catch(e){}
 
     ship.vy += state.gravity;
     ship.x += ship.vx;
@@ -163,30 +186,43 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     if(ship.x < 0) ship.x = 0; if(ship.x > W) ship.x = W;
 
     const verts = shipVertices(ship, true);
-    let collided = false;
-    for(const v of verts){
-      const ty = terrainYAt(state.terrain, v.x);
-      if(v.y >= ty){ collided = true; break; }
-    }
-    if(collided){
-      const onPad = state.pads.find(p => ship.x >= p.left && ship.x <= p.right);
-      const safeAngle = 0.6; const safeVy = 3.2;
-      if(onPad && Math.abs(ship.vy) <= safeVy){
-        beep(880,0.12,'triangle',0.06);
-        state.score += Math.max(100, Math.floor(150 - state.round*10) + Math.floor(state.fuel));
-        if(state.score > (state.highscore||0)){ state.highscore = state.score; saveHigh(state.highscore); }
-        state.round++;
-        // gravity no longer scales with rounds; keep it constant
-        spawnParticles(state, ship.x, ship.y, 26, 'rgba(160,255,160,0.95)', 1.2, 1.6);
-        state.shake = Math.max(state.shake, 6);
-        newRound(false);
-      } else {
-        stopThrustTone();
-        beep(120,0.36,'sawtooth',0.06);
-        spawnParticles(state, ship.x, ship.y, 40, 'rgba(220,80,40,0.98)', 1.6, 2.6);
-        state.shake = Math.max(state.shake, 14);
-        initGame();
-      }
+    
+    const s = Math.sin(ship.angle), c = Math.cos(ship.angle);
+    const lx = ship.radius * 0.75;
+    const legLocalY = ship.radius * 1.45;
+    const leftLeg = { x: ship.x + (-lx * c - legLocalY * s), y: ship.y + (-lx * s + legLocalY * c) };
+    const rightLeg = { x: ship.x + (lx * c - legLocalY * s), y: ship.y + (lx * s + legLocalY * c) };
+
+    
+    let anyVertexHit = false;
+    for(const v of verts){ const ty = terrainYAt(state.terrain, v.x); if(v.y >= ty){ anyVertexHit = true; break; } }
+
+    
+    const leftGroundY = terrainYAt(state.terrain, leftLeg.x);
+    const rightGroundY = terrainYAt(state.terrain, rightLeg.x);
+    const leftContact = leftLeg.y >= leftGroundY - 0.5;
+    const rightContact = rightLeg.y >= rightGroundY - 0.5;
+
+    
+    let padBoth = null;
+    for(const p of state.pads){ if(leftLeg.x >= p.left && leftLeg.x <= p.right && rightLeg.x >= p.left && rightLeg.x <= p.right){ padBoth = p; break; } }
+
+    const safeAngle = 0.6; const safeVy = 3.2;
+
+    if(leftContact && rightContact && padBoth && Math.abs(ship.vy) <= safeVy && Math.abs(ship.angle) <= safeAngle){
+      beep(880,0.12,'triangle',0.06);
+      state.score += Math.max(100, Math.floor(150 - state.round*10) + Math.floor(state.fuel));
+      if(state.score > (state.highscore||0)){ state.highscore = state.score; saveHigh(state.highscore); }
+      state.round++;
+      spawnParticles(state, ship.x, ship.y, 26, 'rgba(160,255,160,0.95)', 1.2, 1.6);
+      state.shake = Math.max(state.shake, 6);
+      newRound(false);
+    } else if(anyVertexHit){
+      stopThrustTone();
+      beep(120,0.36,'sawtooth',0.06);
+      spawnParticles(state, ship.x, ship.y, 40, 'rgba(220,80,40,0.98)', 1.6, 2.6);
+      state.shake = Math.max(state.shake, 14);
+      initGame();
     }
 
     try{
@@ -197,12 +233,24 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
         else { ach.alpha = Math.max(0, ach.alpha - dt * 0.06); if(ach.alpha <= 0){ ach.visible = false; ach.timerMs = 0; } }
       }
     }catch(e){}
+
+    // apply and persist settings changes if visible
+    try{
+      if(state.settings && state.settings.visible){
+        setMusicVolume && setMusicVolume(state.settings.music);
+        setSfxVolume && setSfxVolume(state.settings.sfx);
+        setVibrationMultiplier && setVibrationMultiplier(state.settings.vibration);
+        setStarDensity && setStarDensity(state.settings.stars);
+        saveSettings && saveSettings(state.settings);
+        if(state.settings.fullscreen){ try{ if(!document.fullscreenElement) document.documentElement.requestFullscreen(); }catch(e){} }
+        else { try{ if(document.fullscreenElement) document.exitFullscreen(); }catch(e){} }
+      }
+    }catch(e){}
   }
 
   function draw(dt){
     if(state.menu){
-      ctx.clearRect(0,0,W,H);
-      ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+      try{ drawBackground(ctx, W, H); }catch(e){ ctx.clearRect(0,0,W,H); ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H); }
       const mt = generateTerrain(W, 64);
       ctx.strokeStyle = '#666'; ctx.lineWidth = 2; ctx.beginPath();
       ctx.moveTo(mt[0].x, mt[0].y + 20);
@@ -218,14 +266,22 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     }
 
     offCtx.clearRect(0,0,off.width,off.height);
-    offCtx.strokeStyle = '#fff'; offCtx.lineWidth = 1; offCtx.beginPath();
     const t = state.terrain;
     const scaleX = off.width / W;
     const scaleY = off.height / H;
+    // build filled ground polygon so background doesn't show through
+    offCtx.beginPath();
     offCtx.moveTo(t[0].x * scaleX, t[0].y * scaleY);
     for(let i=1;i<t.length;i++) offCtx.lineTo(t[i].x * scaleX, t[i].y * scaleY);
-    offCtx.stroke();
-    for(const p of state.pads){ offCtx.beginPath(); offCtx.moveTo(p.left * scaleX, p.y * scaleY); offCtx.lineTo(p.right * scaleX, p.y * scaleY); offCtx.stroke(); }
+    // close down to bottom and fill
+    offCtx.lineTo(t[t.length-1].x * scaleX, off.height);
+    offCtx.lineTo(0, off.height);
+    offCtx.closePath();
+    offCtx.fillStyle = '#0b0b0b';
+    offCtx.fill();
+    offCtx.strokeStyle = '#666'; offCtx.lineWidth = 1; offCtx.stroke();
+    // draw landing pads as bright lines on top
+    for(const p of state.pads){ offCtx.beginPath(); offCtx.moveTo(p.left * scaleX, p.y * scaleY); offCtx.lineTo(p.right * scaleX, p.y * scaleY); offCtx.strokeStyle = '#fff'; offCtx.lineWidth = 1; offCtx.stroke(); }
 
    
     
@@ -236,26 +292,88 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     offCtx.translate(sx, sy);
     offCtx.rotate(ship.angle);
     const isGolden = (state.score || 0) > 10000;
+    const shape = ship.shape || state.selectedShipShape || 'triangle';
+    // styles
+    const strokeCol = isGolden ? 'rgba(255,245,190,0.95)' : '#fff';
+    const fillCol = isGolden ? null : '#222';
     if(isGolden){
       const pulse = 0.8 + 0.4 * Math.sin(Date.now() / 300);
       offCtx.shadowColor = 'rgba(255,200,80,0.95)';
-      offCtx.shadowBlur = 18 * pulse;
-      const gg = offCtx.createLinearGradient(-rScaled*0.8, -rScaled*1.0, rScaled*0.8, rScaled*1.2);
-      gg.addColorStop(0, '#ffd86b'); gg.addColorStop(0.5, '#ffce3a'); gg.addColorStop(1, '#e6b22a');
-      offCtx.fillStyle = gg;
-      offCtx.strokeStyle = 'rgba(255,245,190,0.95)'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.08));
-      offCtx.beginPath(); offCtx.rect(-rScaled*0.8, -rScaled*1.0, rScaled*1.6, rScaled*1.2); offCtx.fill(); offCtx.stroke();
-      offCtx.beginPath(); offCtx.fillStyle = 'rgba(255,255,255,0.95)'; offCtx.arc(0, -rScaled*0.35, rScaled*0.35, 0, Math.PI*2); offCtx.fill();
-      offCtx.beginPath(); offCtx.strokeStyle = '#d49b18'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.06));
+      offCtx.shadowBlur = 14 * pulse;
+    }
+    offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.08));
+    offCtx.strokeStyle = strokeCol;
+    // draw by shape
+    if(shape === 'lander'){
+      const w = rScaled*1.6, h = rScaled*1.2;
+      if(isGolden){ const gg = offCtx.createLinearGradient(-w/2, -h, w/2, h); gg.addColorStop(0, '#ffd86b'); gg.addColorStop(0.5, '#ffce3a'); gg.addColorStop(1, '#e6b22a'); offCtx.fillStyle = gg; }
+      else offCtx.fillStyle = fillCol;
+      offCtx.beginPath(); offCtx.rect(-w/2, -h, w, h); offCtx.fill(); offCtx.stroke();
+      offCtx.beginPath(); offCtx.fillStyle = isGolden ? 'rgba(255,255,255,0.95)' : '#fff'; offCtx.arc(0, -rScaled*0.35, rScaled*0.35, 0, Math.PI*2); offCtx.fill();
+      offCtx.beginPath(); offCtx.strokeStyle = isGolden ? '#d49b18' : '#fff'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.06));
       offCtx.moveTo(-rScaled*0.45, rScaled*0.6); offCtx.lineTo(-rScaled*0.95, rScaled*1.25); offCtx.moveTo(rScaled*0.45, rScaled*0.6); offCtx.lineTo(rScaled*0.95, rScaled*1.25); offCtx.stroke();
-      offCtx.beginPath(); offCtx.moveTo(-rScaled*0.95, rScaled*1.25); offCtx.lineTo(-rScaled*1.15, rScaled*1.25); offCtx.moveTo(rScaled*0.95, rScaled*1.25); offCtx.lineTo(rScaled*1.15, rScaled*1.25); offCtx.stroke();
-      offCtx.shadowBlur = 0; offCtx.shadowColor = 'transparent';
+        // landing legs (thin lines)
+        try{
+          const lx = rScaled*0.75, lyTop = rScaled*0.95, lyBottom = rScaled*1.45;
+          offCtx.strokeStyle = isGolden ? '#d49b18' : '#ddd'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.035));
+          offCtx.beginPath(); offCtx.moveTo(-lx, lyTop); offCtx.lineTo(-lx, lyBottom); offCtx.moveTo(lx, lyTop); offCtx.lineTo(lx, lyBottom); offCtx.stroke();
+          // tiny feet
+          const padW = Math.max(1, Math.round(rScaled*0.08)); const padH = Math.max(1, Math.round(rScaled*0.04));
+          offCtx.fillStyle = isGolden ? '#b07f10' : '#bbb'; offCtx.fillRect(-lx - Math.round(padW/2), lyBottom, padW, padH); offCtx.fillRect(lx - Math.round(padW/2), lyBottom, padW, padH);
+        }catch(e){}
+    } else if(shape === 'triangle'){
+      offCtx.beginPath(); offCtx.moveTo(0, -rScaled*1.2); offCtx.lineTo(-rScaled, rScaled*1.0); offCtx.lineTo(rScaled, rScaled*1.0); offCtx.closePath();
+      if(isGolden){ const gg = offCtx.createLinearGradient(-rScaled, -rScaled, rScaled, rScaled); gg.addColorStop(0, '#ffd86b'); gg.addColorStop(1, '#e6b22a'); offCtx.fillStyle = gg; } else offCtx.fillStyle = fillCol;
+      offCtx.fill(); offCtx.stroke();
+        // legs for triangle (thin)
+        try{
+          const lx = rScaled*0.6, lyTop = rScaled*0.75, lyBottom = rScaled*1.45;
+          offCtx.strokeStyle = isGolden ? '#d49b18' : '#ddd'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.03));
+          offCtx.beginPath(); offCtx.moveTo(-lx, lyTop); offCtx.lineTo(-lx, lyBottom); offCtx.moveTo(lx, lyTop); offCtx.lineTo(lx, lyBottom); offCtx.stroke();
+          const padW = Math.max(1, Math.round(rScaled*0.07)); const padH = Math.max(1, Math.round(rScaled*0.035));
+          offCtx.fillStyle = isGolden ? '#b07f10' : '#bbb'; offCtx.fillRect(-lx - Math.round(padW/2), lyBottom, padW, padH); offCtx.fillRect(lx - Math.round(padW/2), lyBottom, padW, padH);
+        }catch(e){}
+    } else if(shape === 'rectangle'){
+      offCtx.beginPath(); offCtx.rect(-rScaled, -rScaled, rScaled*2, rScaled*1.6); if(isGolden){ const gg = offCtx.createLinearGradient(-rScaled, -rScaled, rScaled, rScaled); gg.addColorStop(0, '#ffd86b'); gg.addColorStop(1, '#e6b22a'); offCtx.fillStyle = gg; } else offCtx.fillStyle = fillCol; offCtx.fill(); offCtx.stroke();
+        // legs for rectangle (thin)
+        try{
+          const lx = rScaled*0.9, lyTop = rScaled*0.55, lyBottom = rScaled*1.5;
+          offCtx.strokeStyle = isGolden ? '#d49b18' : '#ddd'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.03));
+          offCtx.beginPath(); offCtx.moveTo(-lx, lyTop); offCtx.lineTo(-lx, lyBottom); offCtx.moveTo(lx, lyTop); offCtx.lineTo(lx, lyBottom); offCtx.stroke();
+          const padW = Math.max(1, Math.round(rScaled*0.08)); const padH = Math.max(1, Math.round(rScaled*0.04));
+          offCtx.fillStyle = isGolden ? '#b07f10' : '#bbb'; offCtx.fillRect(-lx - Math.round(padW/2), lyBottom, padW, padH); offCtx.fillRect(lx - Math.round(padW/2), lyBottom, padW, padH);
+        }catch(e){}
+    } else if(shape === 'diamond'){
+      offCtx.beginPath(); offCtx.moveTo(0, -rScaled*1.2); offCtx.lineTo(rScaled*1.2, 0); offCtx.lineTo(0, rScaled*1.2); offCtx.lineTo(-rScaled*1.2, 0); offCtx.closePath(); if(isGolden){ const gg = offCtx.createLinearGradient(-rScaled, -rScaled, rScaled, rScaled); gg.addColorStop(0, '#ffd86b'); gg.addColorStop(1, '#e6b22a'); offCtx.fillStyle = gg; } else offCtx.fillStyle = fillCol; offCtx.fill(); offCtx.stroke();
+        // legs for diamond (thin)
+        try{
+          const lx = rScaled*0.7, lyTop = rScaled*0.55, lyBottom = rScaled*1.4;
+          offCtx.strokeStyle = isGolden ? '#d49b18' : '#ddd'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.03));
+          offCtx.beginPath(); offCtx.moveTo(-lx, lyTop); offCtx.lineTo(-lx, lyBottom); offCtx.moveTo(lx, lyTop); offCtx.lineTo(lx, lyBottom); offCtx.stroke();
+          const padW = Math.max(1, Math.round(rScaled*0.07)); const padH = Math.max(1, Math.round(rScaled*0.035));
+          offCtx.fillStyle = isGolden ? '#b07f10' : '#bbb'; offCtx.fillRect(-lx - Math.round(padW/2), lyBottom, padW, padH); offCtx.fillRect(lx - Math.round(padW/2), lyBottom, padW, padH);
+        }catch(e){}
+    } else if(shape === 'circle'){
+      offCtx.beginPath(); offCtx.arc(0, 0, rScaled*0.9, 0, Math.PI*2); if(isGolden){ const gg = offCtx.createLinearGradient(-rScaled, -rScaled, rScaled, rScaled); gg.addColorStop(0, '#ffd86b'); gg.addColorStop(1, '#e6b22a'); offCtx.fillStyle = gg; } else offCtx.fillStyle = fillCol; offCtx.fill(); offCtx.stroke();
+        // legs for circle (thin)
+        try{
+          const lx = rScaled*0.8, lyTop = rScaled*0.6, lyBottom = rScaled*1.45;
+          offCtx.strokeStyle = isGolden ? '#d49b18' : '#ddd'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.03));
+          offCtx.beginPath(); offCtx.moveTo(-lx, lyTop); offCtx.lineTo(-lx, lyBottom); offCtx.moveTo(lx, lyTop); offCtx.lineTo(lx, lyBottom); offCtx.stroke();
+          const padW = Math.max(1, Math.round(rScaled*0.07)); const padH = Math.max(1, Math.round(rScaled*0.035));
+          offCtx.fillStyle = isGolden ? '#b07f10' : '#bbb'; offCtx.fillRect(-lx - Math.round(padW/2), lyBottom, padW, padH); offCtx.fillRect(lx - Math.round(padW/2), lyBottom, padW, padH);
+        }catch(e){}
     } else {
-      offCtx.strokeStyle = '#fff';
-      offCtx.beginPath(); offCtx.rect(-rScaled*0.8, -rScaled*1.0, rScaled*1.6, rScaled*1.2); offCtx.stroke();
-      offCtx.beginPath(); offCtx.arc(0, -rScaled*0.35, rScaled*0.35, 0, Math.PI*2); offCtx.stroke();
-      offCtx.beginPath(); offCtx.moveTo(-rScaled*0.45, rScaled*0.6); offCtx.lineTo(-rScaled*0.95, rScaled*1.25); offCtx.moveTo(rScaled*0.45, rScaled*0.6); offCtx.lineTo(rScaled*0.95, rScaled*1.25); offCtx.stroke();
-      offCtx.beginPath(); offCtx.moveTo(-rScaled*0.95, rScaled*1.25); offCtx.lineTo(-rScaled*1.15, rScaled*1.25); offCtx.moveTo(rScaled*0.95, rScaled*1.25); offCtx.lineTo(rScaled*1.15, rScaled*1.25); offCtx.stroke();
+      // default triangle
+      offCtx.beginPath(); offCtx.moveTo(0, -rScaled*1.2); offCtx.lineTo(-rScaled, rScaled*1.0); offCtx.lineTo(rScaled, rScaled*1.0); offCtx.closePath(); offCtx.fillStyle = fillCol; offCtx.fill(); offCtx.stroke();
+        // legs for default (thin)
+        try{
+          const lx = rScaled*0.6, lyTop = rScaled*0.72, lyBottom = rScaled*1.45;
+          offCtx.strokeStyle = isGolden ? '#d49b18' : '#ddd'; offCtx.lineWidth = Math.max(1, Math.round(rScaled*0.03));
+          offCtx.beginPath(); offCtx.moveTo(-lx, lyTop); offCtx.lineTo(-lx, lyBottom); offCtx.moveTo(lx, lyTop); offCtx.lineTo(lx, lyBottom); offCtx.stroke();
+          const padW = Math.max(1, Math.round(rScaled*0.07)); const padH = Math.max(1, Math.round(rScaled*0.035));
+          offCtx.fillStyle = isGolden ? '#b07f10' : '#bbb'; offCtx.fillRect(-lx - Math.round(padW/2), lyBottom, padW, padH); offCtx.fillRect(lx - Math.round(padW/2), lyBottom, padW, padH);
+        }catch(e){}
     }
 
     const thrustVisual = ((state.keys && state.keys.thrust) || (state.throttle && state.throttle > 0)) && state.fuel > 0;
@@ -263,10 +381,11 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
       offCtx.fillStyle = isGolden ? 'rgba(255,220,100,0.95)' : 'rgba(255,160,40,0.9)';
       offCtx.beginPath(); offCtx.moveTo(-rScaled*0.25, rScaled*0.9); offCtx.lineTo(0, rScaled*1.6 + (Math.random()*rScaled*0.25)); offCtx.lineTo(rScaled*0.25, rScaled*0.9); offCtx.closePath(); offCtx.fill();
     }
+    if(isGolden) { offCtx.shadowBlur = 0; offCtx.shadowColor = 'transparent'; }
     offCtx.restore();
 
     ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0,0,W,H);
+    try{ drawBackground(ctx, W, H); }catch(e){ ctx.clearRect(0,0,W,H); }
     // apply screen shake when drawing the world
     ctx.save();
     if(state.shake){ const sx = (Math.random()*2-1) * state.shake; const sy = (Math.random()*2-1) * state.shake; ctx.translate(sx, sy); }
@@ -285,6 +404,7 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     }
     // draw pause overlay if paused
     if(state.paused){ drawPauseMenu(ctx, W, H); }
+    if(state.settings && state.settings.visible){ drawSettings(ctx, W, H, state); return; }
 
     ctx.font = '14px monospace'; ctx.fillStyle = '#fff';
     ctx.textAlign = 'left';
@@ -324,7 +444,7 @@ import { initInput, pollInput, vibrateGamepad, stopThrottleVibration } from './i
     requestAnimationFrame(loop);
   }
 
-  initInput(state, { audioCtx, startMusic, setMusicVolume, stopThrustTone, startTransition, initGame, cycleShipShape, controls });
+  initInput(state, { audioCtx, startMusic, setMusicVolume, stopThrustTone, startTransition, initGame, cycleShipShape, controls, debug: true });
   initGame();
   requestAnimationFrame(loop);
 
