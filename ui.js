@@ -76,28 +76,7 @@ export function drawPauseMenu(ctx, W, H){
   ctx.restore();
 }
 
-export function drawSettings(ctx, W, H, state){
-  ctx.save();
-  ctx.fillStyle = 'rgba(6,10,12,0.9)'; ctx.fillRect(0,0,W,H);
-  const bw = Math.min(720, Math.round(W*0.7)); const bh = Math.round(Math.min(360, H*0.6));
-  const bx = Math.round((W - bw)/2), by = Math.round((H - bh)/2);
-  ctx.fillStyle = 'rgba(20,24,28,0.95)'; ctx.fillRect(bx, by, bw, bh);
-  ctx.strokeStyle = '#333'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh);
-  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = Math.max(20, Math.round(H*0.04)) + 'px monospace';
-  ctx.fillText('Settings', bx + bw/2, by + 40);
-  const labels = ['Music','SFX','Vibration','Starfield','Fullscreen'];
-  const vals = [ (state.settings.music||0.06), (state.settings.sfx||1), (state.settings.vibration||1), (state.settings.stars||1), (state.settings.fullscreen? 'On':'Off') ];
-  ctx.font = Math.max(12, Math.round(H*0.025)) + 'px monospace'; ctx.textAlign = 'left';
-  const left = bx + 28; let y = by + 84; const lineH = Math.round(bh*0.12);
-  for(let i=0;i<labels.length;i++){
-    const sel = state.settings.selectedIndex === i;
-    ctx.fillStyle = sel ? '#ffcc66' : '#ddd'; ctx.fillText(labels[i], left, y + 18);
-    ctx.fillStyle = '#fff'; if(i<4) ctx.fillText(String(Math.round(vals[i]*100))/100, bx + bw - 120, y + 18); else ctx.fillText(vals[i], bx + bw - 120, y + 18);
-    y += lineH;
-  }
-  ctx.font = Math.max(11, Math.round(H*0.02)) + 'px monospace'; ctx.fillStyle = '#bbb'; ctx.fillText('Use Up/Down to select, Left/Right to change, Enter to toggle fullscreen', bx + bw/2, by + bh - 24);
-  ctx.restore();
-}
+// settings UI removed
 
 export function overlayTransition(ctx, W, H, p){
   const prog = Math.max(0, Math.min(1, p));

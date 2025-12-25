@@ -4,11 +4,8 @@ import { saveShipShape, loadShipShape, saveHigh, loadHigh } from './persist.js';
 import { shipVertices } from './ship.js';
 import { spawnParticles, updateParticles } from './particles.js';
 import { drawMenu, drawControllerConfirm, drawPauseMenu, overlayTransition, drawAchievement } from './ui.js';
-import { initInput, pollInput, vibrateGamepad, stopThrottleVibration, setVibrationMultiplier } from './input.js';
-import { setStarDensity } from './background.js';
-import { drawSettings } from './ui.js';
-import { saveSettings, loadSettings } from './persist.js';
-import { initBackground, resizeBackground, updateBackground, drawBackground } from './background.js';
+import { initInput, pollInput, vibrateGamepad, stopThrottleVibration, setVibrationMultiplier, clearYHoldState } from './input.js';
+import { initBackground, resizeBackground, updateBackground, drawBackground, setStarDensity } from './background.js';
 
 (() => {
   const canvas = document.getElementById('game');
@@ -120,9 +117,11 @@ import { initBackground, resizeBackground, updateBackground, drawBackground } fr
     state.highscore = loadHigh();
     state.selectedShipShape = loadShipShape();
     try{ stopThrottleVibration(); }catch(e){}
-    state.settings = state.settings || { music:0.06, sfx:1, vibration:1, stars:1, fullscreen:false, selectedIndex:0 };
-    try{ const ss = loadSettings(); if(ss) state.settings = Object.assign(state.settings, ss); }catch(e){}
-    try{ setMusicVolume(state.settings.music); setSfxVolume && setSfxVolume(state.settings.sfx); setVibrationMultiplier && setVibrationMultiplier(state.settings.vibration); setStarDensity && setStarDensity(state.settings.stars); }catch(e){}
+    try{ clearYHoldState(); }catch(e){}
+    try{ setMusicVolume(0.06); setSfxVolume && setSfxVolume(1); setVibrationMultiplier && setVibrationMultiplier(1); setStarDensity && setStarDensity(1); }catch(e){}
+    state._settingsFullscreenApplied = false;
+      try{ state._allowSettings = false; setTimeout(()=>{ try{ state._allowSettings = true; }catch(e){} }, 900); }catch(e){}
+      try{ state._ignoreInput = true; setTimeout(()=>{ try{ state._ignoreInput = false; }catch(e){} }, 900); }catch(e){}
     newRound(true);
   }
 
@@ -234,18 +233,6 @@ import { initBackground, resizeBackground, updateBackground, drawBackground } fr
       }
     }catch(e){}
 
-    // apply and persist settings changes if visible
-    try{
-      if(state.settings && state.settings.visible){
-        setMusicVolume && setMusicVolume(state.settings.music);
-        setSfxVolume && setSfxVolume(state.settings.sfx);
-        setVibrationMultiplier && setVibrationMultiplier(state.settings.vibration);
-        setStarDensity && setStarDensity(state.settings.stars);
-        saveSettings && saveSettings(state.settings);
-        if(state.settings.fullscreen){ try{ if(!document.fullscreenElement) document.documentElement.requestFullscreen(); }catch(e){} }
-        else { try{ if(document.fullscreenElement) document.exitFullscreen(); }catch(e){} }
-      }
-    }catch(e){}
   }
 
   function draw(dt){
@@ -269,18 +256,18 @@ import { initBackground, resizeBackground, updateBackground, drawBackground } fr
     const t = state.terrain;
     const scaleX = off.width / W;
     const scaleY = off.height / H;
-    // build filled ground polygon so background doesn't show through
+
     offCtx.beginPath();
     offCtx.moveTo(t[0].x * scaleX, t[0].y * scaleY);
     for(let i=1;i<t.length;i++) offCtx.lineTo(t[i].x * scaleX, t[i].y * scaleY);
-    // close down to bottom and fill
+
     offCtx.lineTo(t[t.length-1].x * scaleX, off.height);
     offCtx.lineTo(0, off.height);
     offCtx.closePath();
     offCtx.fillStyle = '#0b0b0b';
     offCtx.fill();
     offCtx.strokeStyle = '#666'; offCtx.lineWidth = 1; offCtx.stroke();
-    // draw landing pads as bright lines on top
+
     for(const p of state.pads){ offCtx.beginPath(); offCtx.moveTo(p.left * scaleX, p.y * scaleY); offCtx.lineTo(p.right * scaleX, p.y * scaleY); offCtx.strokeStyle = '#fff'; offCtx.lineWidth = 1; offCtx.stroke(); }
 
    
@@ -404,7 +391,6 @@ import { initBackground, resizeBackground, updateBackground, drawBackground } fr
     }
     // draw pause overlay if paused
     if(state.paused){ drawPauseMenu(ctx, W, H); }
-    if(state.settings && state.settings.visible){ drawSettings(ctx, W, H, state); return; }
 
     ctx.font = '14px monospace'; ctx.fillStyle = '#fff';
     ctx.textAlign = 'left';

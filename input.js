@@ -15,6 +15,9 @@ let _lastVib = {};
 let _yHeld = false;
 let _l3Held = false;
 let _vibMult = 1;
+let _yDownTs = 0;
+let _yHoldTimer = null;
+const Y_HOLD_MS = 700;
 
 export function initInput(state, deps = {}){
   if(_inited) return;
@@ -52,32 +55,7 @@ function _pointerUnlock(){ try{ unlockAudioAndStartMusic(); }catch(e){} }
 
 function _onKeyDown(e){
   if(!_state) return;
-  if(_state.settings && _state.settings.visible){
-    const idx = _state.settings.selectedIndex || 0;
-    if(e.code === 'ArrowUp'){ _state.settings.selectedIndex = Math.max(0, idx - 1); return; }
-    if(e.code === 'ArrowDown'){ _state.settings.selectedIndex = Math.min(4, idx + 1); return; }
-    if(e.code === 'ArrowLeft'){
-      const si = _state.settings.selectedIndex || 0;
-      if(si === 0) _state.settings.music = Math.max(0, (_state.settings.music || 0) - 0.01);
-      if(si === 1) _state.settings.sfx = Math.max(0, (_state.settings.sfx || 1) - 0.05);
-      if(si === 2) _state.settings.vibration = Math.max(0, (_state.settings.vibration || 1) - 0.05);
-      if(si === 3) _state.settings.stars = Math.max(0, (_state.settings.stars || 1) - 0.1);
-      return;
-    }
-    if(e.code === 'ArrowRight'){
-      const si = _state.settings.selectedIndex || 0;
-      if(si === 0) _state.settings.music = Math.min(1, (_state.settings.music || 0) + 0.01);
-      if(si === 1) _state.settings.sfx = Math.min(4, (_state.settings.sfx || 1) + 0.05);
-      if(si === 2) _state.settings.vibration = Math.min(2, (_state.settings.vibration || 1) + 0.05);
-      if(si === 3) _state.settings.stars = Math.min(3, (_state.settings.stars || 1) + 0.1);
-      return;
-    }
-    if(e.code === 'Enter'){
-      const si = _state.settings.selectedIndex || 0;
-      if(si === 4) _state.settings.fullscreen = !_state.settings.fullscreen;
-      return;
-    }
-  }
+  // settings UI removed — fall through to normal game key handling
   if(e.code==='ArrowLeft') _state.keys.left=true;
   if(e.code==='ArrowRight') _state.keys.right=true;
   if(e.code==='ArrowUp') _state.keys.thrust=true;
@@ -97,6 +75,7 @@ function _onKeyUp(e){ if(!_state) return; if(e.code==='ArrowLeft') _state.keys.l
 
 export function pollInput(dt){
   if(!_state) return;
+  if(_state._ignoreInput) return;
   const gpsAll = navigator.getGamepads ? navigator.getGamepads() : [];
   try{
     if(_deps.audioCtx && _deps.audioCtx.state === 'suspended'){
@@ -309,4 +288,10 @@ export function stopThrottleVibration(){
   }catch(e){}
   _throttleVibMap = {};
   _lastVib = {};
+}
+
+export function clearYHoldState(){
+  try{ if(_yHoldTimer){ clearTimeout(_yHoldTimer); _yHoldTimer = null; } }catch(e){}
+  _yHeld = false;
+  _yDownTs = 0;
 }
